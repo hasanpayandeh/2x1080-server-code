@@ -88,9 +88,11 @@ def generate(request: GenerateRequest) -> dict:
                 detail=f"failed to fetch image_url: {exc}",
             ) from exc
 
+        # For Gemma multimodal chat templates, use an image placeholder token
+        # and provide the PIL image separately in processor(..., images=...).
         user_content = [
+            {"type": "image"},
             {"type": "text", "text": user_prompt},
-            {"type": "image", "url": request.image_url},
         ]
     else:
         user_content = user_prompt
