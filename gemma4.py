@@ -7,48 +7,16 @@ MODEL_ID = "google/gemma-4-E2B-it"
 DEFAULT_MAX_NEW_TOKENS = 1024
 
 
-def _normalize_map_device(mapped_device):
-    if isinstance(mapped_device, int):
-        return torch.device(f"cuda:{mapped_device}")
+def get_input_device(model):
+    if hasattr(model, "hf_device_map") and model.hf_device_map:
+        for mapped_device in model.hf_device_map.values():
+            if isinstance(mapped_device, int):
+                return torch.device(f"cuda:{mapped_device}")
+            if isinstance(mapped_device, str) and mapped_device.startswith("cuda"):
+                return torch.device(mapped_device)
+        return torch.device("cpu")
 
-    if isinstance(mapped_device, str):
-        if mapped_device in {"cpu", "mps"} or mapped_device.startswith("cuda"):
-            return torch.device(mapped_device)
-        # "disk" and "meta" are not valid tensor destinations.
-        return None
-
-    return None
-
-
-def get_inputs_device(model_obj):
-    device_map = getattr(model_obj, "hf_device_map", None)
-    if device_map:
-        preferred_fallback = None
-
-        # Prefer the embedding shard when available.
-        for key in ("model.embed_tokens", "embed_tokens", "lm_head"):
-            if key in device_map:
-                normalized = _normalize_map_device(device_map[key])
-                if normalized is not None:
-                    if normalized.type == "cuda":
-                        return normalized
-                    preferred_fallback = normalized
-
-        fallback = None
-        for mapped_device in device_map.values():
-            normalized = _normalize_map_device(mapped_device)
-            if normalized is not None:
-                if normalized.type == "cuda":
-                    return normalized
-                if fallback is None:
-                    fallback = normalized
-
-        if preferred_fallback is not None:
-            return preferred_fallback
-        if fallback is not None:
-            return fallback
-
-    return next(model_obj.parameters()).device
+    return next(model.parameters()).device
 
 processor = AutoProcessor.from_pretrained(MODEL_ID)
 model = AutoModelForCausalLM.from_pretrained(
@@ -79,9 +47,9 @@ text = processor.apply_chat_template(
 )
 
 inputs = processor(text=text, return_tensors="pt")
-inputs_device = get_inputs_device(model)
+input_device = get_input_device(model)
 inputs = {
-    k: (v.to(inputs_device) if torch.is_tensor(v) else v)
+    k: (v.to(input_device) if hasattr(v, "to") else v)
     for k, v in inputs.items()
 }
 input_len = inputs["input_ids"].shape[-1]
