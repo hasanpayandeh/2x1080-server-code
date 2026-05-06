@@ -9,7 +9,7 @@ from transformers import AutoProcessor, AutoModelForCausalLM, BitsAndBytesConfig
 MODEL_ID = "google/gemma-4-E2B-it"
 DEFAULT_MAX_NEW_TOKENS = 1024
 
-
+ 
 def get_input_device(model):
     if hasattr(model, "hf_device_map") and model.hf_device_map:
         for mapped_device in model.hf_device_map.values():
