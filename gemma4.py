@@ -1,13 +1,22 @@
 import os
-import sys
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 import torch
+import uvicorn
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 from transformers import AutoProcessor, AutoModelForCausalLM, BitsAndBytesConfig
 
 MODEL_ID = "google/gemma-4-E2B-it"
 DEFAULT_MAX_NEW_TOKENS = 1024
+
+app = FastAPI(title="Gemma4 API", version="1.0.0")
+
+
+class GenerateRequest(BaseModel):
+    prompt: str = Field(..., min_length=1)
+    max_new_tokens: int = Field(default=DEFAULT_MAX_NEW_TOKENS, ge=1, le=4096)
 
  
 def get_input_device(model):
@@ -36,40 +45,54 @@ model = AutoModelForCausalLM.from_pretrained(
     low_cpu_mem_usage=True,
 )
 
-# Get prompt from CLI
-if len(sys.argv) < 2:
-    print("Usage: python gemma4.py 'your prompt here' [max_new_tokens]")
-    sys.exit(1)
 
-user_prompt = sys.argv[1]
-max_new_tokens = int(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_MAX_NEW_TOKENS
+@app.get("/health")
+def health() -> dict:
+    return {
+        "status": "ok",
+        "model_id": MODEL_ID,
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", ""),
+    }
 
-messages = [
-    {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": user_prompt},
-]
 
-text = processor.apply_chat_template(
-    messages,
-    tokenize=False,
-    add_generation_prompt=True,
-    enable_thinking=False
-)
+@app.post("/generate")
+def generate(request: GenerateRequest) -> dict:
+    user_prompt = request.prompt.strip()
+    if not user_prompt:
+        raise HTTPException(status_code=400, detail="prompt cannot be empty")
 
-inputs = processor(text=text, return_tensors="pt")
-input_device = get_input_device(model)
-inputs = {
-    k: (v.to(input_device) if hasattr(v, "to") else v)
-    for k, v in inputs.items()
-}
-input_len = inputs["input_ids"].shape[-1]
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": user_prompt},
+    ]
 
-generate_kwargs = {"max_new_tokens": max_new_tokens}
-if torch.distributed.is_available() and torch.distributed.is_initialized():
-    generate_kwargs["synced_gpus"] = True
+    text = processor.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=False,
+    )
 
-with torch.inference_mode():
-    outputs = model.generate(**inputs, **generate_kwargs)
-response = processor.decode(outputs[0][input_len:], skip_special_tokens=False)
+    inputs = processor(text=text, return_tensors="pt")
+    input_device = get_input_device(model)
+    inputs = {
+        k: (v.to(input_device) if hasattr(v, "to") else v)
+        for k, v in inputs.items()
+    }
+    input_len = inputs["input_ids"].shape[-1]
 
-print(processor.parse_response(response))
+    generate_kwargs = {"max_new_tokens": request.max_new_tokens}
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        generate_kwargs["synced_gpus"] = True
+
+    with torch.inference_mode():
+        outputs = model.generate(**inputs, **generate_kwargs)
+
+    response = processor.decode(outputs[0][input_len:], skip_special_tokens=False)
+    return {"response": processor.parse_response(response)}
+
+
+if __name__ == "__main__":
+    host = os.environ.get("HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", "8001"))
+    uvicorn.run(app, host=host, port=port)
