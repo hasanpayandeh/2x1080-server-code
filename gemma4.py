@@ -54,8 +54,12 @@ inputs = {
 }
 input_len = inputs["input_ids"].shape[-1]
 
+generate_kwargs = {"max_new_tokens": max_new_tokens}
+if torch.distributed.is_available() and torch.distributed.is_initialized():
+    generate_kwargs["synced_gpus"] = True
+
 with torch.inference_mode():
-    outputs = model.generate(**inputs, max_new_tokens=max_new_tokens)
+    outputs = model.generate(**inputs, **generate_kwargs)
 response = processor.decode(outputs[0][input_len:], skip_special_tokens=False)
 
 print(processor.parse_response(response))
