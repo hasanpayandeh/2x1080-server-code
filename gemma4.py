@@ -1,7 +1,10 @@
+import os
 import sys
 
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+
 import torch
-from transformers import AutoProcessor, AutoModelForCausalLM
+from transformers import AutoProcessor, AutoModelForCausalLM, BitsAndBytesConfig
 
 MODEL_ID = "google/gemma-4-E2B-it"
 DEFAULT_MAX_NEW_TOKENS = 1024
@@ -19,9 +22,16 @@ def get_input_device(model):
     return next(model.parameters()).device
 
 processor = AutoProcessor.from_pretrained(MODEL_ID)
+quantization_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_compute_dtype=torch.float16,
+    bnb_4bit_quant_type="nf4",
+    bnb_4bit_use_double_quant=True,
+)
+
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_ID,
-    torch_dtype=torch.float16,
+    quantization_config=quantization_config,
     device_map="auto",
     low_cpu_mem_usage=True,
 )
