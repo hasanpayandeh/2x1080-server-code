@@ -10,6 +10,17 @@ model = AutoModelForCausalLM.from_pretrained(
     device_map="auto"
 )
 
+
+def get_model_input_device(model):
+    # For sharded models, use the first non-CPU shard as the input device.
+    if hasattr(model, "hf_device_map"):
+        for device in model.hf_device_map.values():
+            if device not in ("cpu", "disk"):
+                if isinstance(device, int):
+                    return f"cuda:{device}"
+                return device
+    return next(model.parameters()).device
+
 # Get prompt from CLI
 if len(sys.argv) < 2:
     print("Usage: python gemma4.py 'your prompt here'")
@@ -29,7 +40,9 @@ text = processor.apply_chat_template(
     enable_thinking=False
 )
 
-inputs = processor(text=text, return_tensors="pt").to(model.device)
+input_device = get_model_input_device(model)
+inputs = processor(text=text, return_tensors="pt")
+inputs = {k: v.to(input_device) for k, v in inputs.items()}
 input_len = inputs["input_ids"].shape[-1]
 
 outputs = model.generate(**inputs, max_new_tokens=1024)
