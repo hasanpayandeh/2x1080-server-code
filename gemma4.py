@@ -1,10 +1,15 @@
 import os
+import json
+from io import BytesIO
+from typing import Any
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
+import requests
 import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from PIL import Image
 from pydantic import BaseModel, Field
 from transformers import AutoProcessor, AutoModelForCausalLM, BitsAndBytesConfig
 
@@ -17,6 +22,8 @@ app = FastAPI(title="Gemma4 API", version="1.0.0")
 class GenerateRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
     max_new_tokens: int = Field(default=DEFAULT_MAX_NEW_TOKENS, ge=1, le=4096)
+    image_url: str | None = None
+    rf_detr_output: dict[str, Any] | None = None
 
  
 def get_input_device(model):
@@ -61,9 +68,36 @@ def generate(request: GenerateRequest) -> dict:
     if not user_prompt:
         raise HTTPException(status_code=400, detail="prompt cannot be empty")
 
+    if request.rf_detr_output is not None:
+        user_prompt = (
+            f"{user_prompt}\n\n"
+            "RF-DETR output (JSON):\n"
+            f"{json.dumps(request.rf_detr_output, ensure_ascii=True)}"
+        )
+
+    image = None
+    user_content: str | list[dict[str, str]]
+    if request.image_url:
+        try:
+            image_resp = requests.get(request.image_url, timeout=30)
+            image_resp.raise_for_status()
+            image = Image.open(BytesIO(image_resp.content)).convert("RGB")
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"failed to fetch image_url: {exc}",
+            ) from exc
+
+        user_content = [
+            {"type": "text", "text": user_prompt},
+            {"type": "image", "url": request.image_url},
+        ]
+    else:
+        user_content = user_prompt
+
     messages = [
         {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": user_prompt},
+        {"role": "user", "content": user_content},
     ]
 
     text = processor.apply_chat_template(
@@ -73,7 +107,10 @@ def generate(request: GenerateRequest) -> dict:
         enable_thinking=False,
     )
 
-    inputs = processor(text=text, return_tensors="pt")
+    if image is not None:
+        inputs = processor(text=text, images=image, return_tensors="pt")
+    else:
+        inputs = processor(text=text, return_tensors="pt")
     input_device = get_input_device(model)
     inputs = {
         k: (v.to(input_device) if hasattr(v, "to") else v)
@@ -89,7 +126,10 @@ def generate(request: GenerateRequest) -> dict:
         outputs = model.generate(**inputs, **generate_kwargs)
 
     response = processor.decode(outputs[0][input_len:], skip_special_tokens=False)
-    return {"response": processor.parse_response(response)}
+    return {
+        "response": processor.parse_response(response),
+        "used_image_url": request.image_url,
+    }
 
 
 if __name__ == "__main__":
